@@ -30,7 +30,7 @@ Rekomenduojama maršrutizatoriuje TV priskirti pastovų IP adresą, kad jo nerei
 
 - **TV įjungti negalima.** Įjungimui reikia Wake-on-LAN (UDP), o naršyklė UDP siųsti negali. Išjungti galima.
 - **Veikia Android telefone su Chrome.** iPhone Safari neleidžia `wss://` ryšio su savo pasirašytu TV sertifikatu, todėl iPhone greičiausiai neprisijungs.
-- Naršyklė kartais pamiršta patvirtintą sertifikatą (pvz., po naujinimo). Tada pakartokite 4 žingsnį.
+- Naršyklė kartais pamiršta patvirtintą sertifikatą (pvz., po naujinimo). Tada pakartokite 3 žingsnį arba spauskite „Atidaryti sertifikatą“.
 - Chrome (nuo 142 versijos) leidžia pasiekti vietinio tinklo įrenginius tik gavus leidimą. Jei jį atmetėte: adreso juostoje bakstelėkite piktogramą kairėje → Leidimai → „Vietinis tinklas“ → Leisti.
 - Senesniuose LG televizoriuose (webOS 3–4) gali reikėti įjungti Nustatymai → Tinklas → „LG Connect Apps“.
 - Svečių Wi-Fi tinkluose ir tinkluose su įjungta klientų izoliacija (AP isolation) telefonas TV nepasieks.
