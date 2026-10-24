@@ -39,6 +39,8 @@ Rekomenduojama maršrutizatoriuje TV priskirti pastovų IP adresą, kad jo nerei
 - Naršyklė kartais pamiršta patvirtintą sertifikatą (pvz., po naujinimo). Tada pakartokite 3 žingsnį arba spauskite „Atidaryti sertifikatą“.
 - Chrome (nuo 142 versijos) leidžia pasiekti vietinio tinklo įrenginius tik gavus leidimą. Jei jį atmetėte: adreso juostoje bakstelėkite piktogramą kairėje → Leidimai → „Vietinis tinklas“ → Leisti.
 - Senesniuose LG televizoriuose (webOS 3–4) gali reikėti įjungti Nustatymai → Tinklas → „LG Connect Apps“.
+- **Safari nepalaikomas**: jis neleidžia atpažinti TV ir prie jo prisijungti. Naudokite Google Chrome.
+- 2026 m. LG programinė įranga atmeta seną „pasirašytą“ poravimo manifestą („403 Pairing rejected: blacklisted certificate detected“). Pultas naudoja nepasirašytą manifestą, kaip ir Home Assistant. Jei TV vis tiek neleistų mygtukų socket, rodyklės ir OK neveiks, bet garsas, kanalai, programėlės ir medija veiks.
 - Svečių Wi-Fi tinkluose ir tinkluose su įjungta klientų izoliacija (AP isolation) telefonas TV nepasieks.
 
 ## Kaip veikia

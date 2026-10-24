@@ -1,5 +1,5 @@
 // Network first, cache as offline fallback. Bump VERSION when files change.
-const VERSION = 'lg-pultas-v3';
+const VERSION = 'lg-pultas-v4';
 const FILES = [
   './',
   'index.html',

@@ -111,9 +111,11 @@ function renderStatus(state) {
 
 const LNA_HELP = 'Chrome neleidžia šiai svetainei pasiekti vietinio tinklo įrenginių. Leiskite: bakstelėkite piktogramą kairėje adreso juostos pusėje → Leidimai (Svetainės nustatymai) → „Vietinis tinklas“ → Leisti. Tada bandykite dar kartą.';
 
-function errorText(code) {
+function errorText(code, detail) {
   if (code === 'lna-denied') return LNA_HELP;
-  if (code === 'denied') return 'Televizorius atmetė prisijungimą. Spauskite „Prisijungti“ dar kartą ir TV ekrane pasirinkite „Leisti“.';
+  if (code === 'denied') return 'TV ekrane prisijungimas buvo atmestas. Spauskite „Prisijungti“ dar kartą ir TV ekrane pasirinkite „Leisti“.';
+  if (code === 'pair-error') return `Televizorius nepriėmė poravimo${detail ? ': „' + detail + '“' : ''}.\n` +
+    'Patikrinkite TV nustatymus: Bendrieji → Išoriniai įrenginiai (arba Ryšys) → „LG Connect Apps“ / mobiliųjų įrenginių ryšys turi būti įjungtas. Tada spauskite „Prisijungti“ dar kartą.';
   if (code === 'pair-timeout') return 'Nesulaukta patvirtinimo televizoriuje. Spauskite „Prisijungti“ dar kartą.';
   return `Nepavyko pasiekti TV adresu ${target ? target.ip : ''}. Patikrinkite:\n` +
     '• TV įjungtas ir prijungtas prie to paties Wi-Fi kaip telefonas;\n' +
@@ -179,8 +181,8 @@ function connect() {
     .catch((err) => {
       if (err.message === 'superseded') return false;
       const code = err.message;
-      if (code === 'lna-denied') { renderStatus('error'); openSetup(); }
-      if ($('#setup').open) setupMsg(errorText(code), 'err');
+      if (code === 'lna-denied' || code === 'denied' || code === 'pair-error' || code === 'pair-timeout') { renderStatus('error'); openSetup(); }
+      if ($('#setup').open) setupMsg(errorText(code, err.detail), 'err');
       if (code === 'unreachable') {
         if (!recoveryTried) { recoveryTried = true; recover(); } else scheduleRetry();
       }
@@ -280,6 +282,13 @@ tv.addEventListener('state', (e) => {
   } else if (state === 'disconnected') {
     scheduleRetry();
   }
+});
+
+let pointerWarned = false;
+tv.addEventListener('pointer-refused', (e) => {
+  if (pointerWarned) return;
+  pointerWarned = true;
+  toast(`Televizorius neleido rodyklių ir OK valdymo per tinklą (${e.detail}). Garsas, kanalai, programėlės ir medija veikia.`, 8000);
 });
 
 tv.addEventListener('volume', (e) => {
@@ -673,8 +682,11 @@ function renderScan(res) {
       box.appendChild(listButton(title, notes.join(' · '), () => chooseCandidate(c.ip, { certAccepted: c.certAccepted, name: c.name }), { best: i === 0 }));
     });
   } else {
-    scanMsg(`LG televizorius tinkle ${subnets.map((p) => p + '.x').join(', ')} nerastas. Patikrinkite, ar TV įjungtas ir prijungtas prie to paties Wi-Fi.` +
-      (others.length ? ' Žemiau – kiti rasti įrenginiai.' : ''), 'err');
+    const noHttp = res.diag && !res.diag.httpAllowed;
+    scanMsg(noHttp
+      ? 'Ši naršyklė neleidžia patikrinti, kuris įrenginys yra LG televizorius. Atidarykite pultą Google Chrome naršyklėje.'
+      : `LG televizorius tinkle ${subnets.map((p) => p + '.x').join(', ')} nerastas. Patikrinkite, ar TV įjungtas ir prijungtas prie to paties Wi-Fi.` +
+        (others.length ? ' Žemiau – kiti rasti įrenginiai.' : ''), 'err');
   }
   if (others.length) {
     const more = document.createElement('details');
@@ -766,6 +778,17 @@ $('#ipInput').addEventListener('keydown', (e) => {
 });
 
 // ---------- Start ----------
+
+// Safari cannot reach the TV's local services from this page; say so up front.
+{
+  const ua = navigator.userAgent;
+  const safari = /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS|SamsungBrowser/.test(ua);
+  if (safari) {
+    const w = $('#browserWarn');
+    w.textContent = 'Safari neleidžia atpažinti televizoriaus ir prie jo prisijungti. Atidarykite pultą Google Chrome naršyklėje.';
+    w.hidden = false;
+  }
+}
 
 try { apps = JSON.parse(store.get('lg-apps') || 'null'); } catch { apps = null; }
 renderShortcuts();

@@ -6,7 +6,24 @@
 // accepts "Origin: null". So every socket is opened inside a hidden data: iframe
 // (which has an opaque, null origin) and relayed to this page with postMessage.
 
-const LG_MANIFEST = {"manifestVersion":1,"appVersion":"1.1","signed":{"created":"20140509","appId":"com.lge.test","vendorId":"com.lge","localizedAppNames":{"":"LG Remote App","ko-KR":"리모컨 앱","zxx-XX":"ЛГ Rэмotэ AПП"},"localizedVendorNames":{"":"LG Electronics"},"permissions":["TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD","READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER","READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO","UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"],"serial":"2f930e2d2cfe083771f68e4fe7bb07"},"permissions":["LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED","CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING","CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE","READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE","READ_COUNTRY_INFO","READ_SETTINGS","CONTROL_TV_SCREEN","CONTROL_TV_STANBY","CONTROL_FAVORITE_GROUP","CONTROL_USER_INFO","CHECK_BLUETOOTH_DEVICE","CONTROL_BLUETOOTH","CONTROL_TIMER_INFO","STB_INTERNAL_CONNECTION","CONTROL_RECORDING","READ_RECORDING_STATE","WRITE_RECORDING_LIST","READ_RECORDING_LIST","READ_RECORDING_SCHEDULE","WRITE_RECORDING_SCHEDULE","READ_STORAGE_DEVICE_LIST","READ_TV_PROGRAM_INFO","CONTROL_BOX_CHANNEL","READ_TV_ACR_AUTH_TOKEN","READ_TV_CONTENT_STATE","READ_TV_CURRENT_TIME","ADD_LAUNCHER_CHANNEL","SET_CHANNEL_SKIP","RELEASE_CHANNEL_SKIP","CONTROL_CHANNEL_BLOCK","DELETE_SELECT_CHANNEL","CONTROL_CHANNEL_GROUP","SCAN_TV_CHANNELS","CONTROL_TV_POWER","CONTROL_WOL"],"signatures":[{"signatureVersion":1,"signature":"eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbmctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRyaMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQojoa7NQnAtw=="}]};
+// Unsigned manifest, as used by Home Assistant (aiowebostv 0.9.2+). LG firmware from 2026 rejects the
+// old signed "LG test" manifest with "403 Pairing rejected: blacklisted certificate detected" and shows
+// no prompt; with this one the TV asks the user to allow the connection.
+const LG_MANIFEST = {
+  manifestVersion: 1,
+  appVersion: '1.1',
+  permissions: [
+    'APP_TO_APP', 'CLOSE', 'CONTROL_AUDIO', 'CONTROL_DISPLAY', 'CONTROL_INPUT_JOYSTICK',
+    'CONTROL_INPUT_MEDIA_PLAYBACK', 'CONTROL_INPUT_MEDIA_RECORDING', 'CONTROL_INPUT_TEXT',
+    'CONTROL_INPUT_TV', 'CONTROL_MOUSE_AND_KEYBOARD', 'CONTROL_POWER', 'CONTROL_TV_SCREEN',
+    'LAUNCH', 'LAUNCH_WEBAPP', 'READ_APP_STATUS', 'READ_COUNTRY_INFO', 'READ_CURRENT_CHANNEL',
+    'READ_INPUT_DEVICE_LIST', 'READ_INSTALLED_APPS', 'READ_LGE_SDX', 'READ_LGE_TV_INPUT_EVENTS',
+    'READ_NETWORK_STATE', 'READ_NOTIFICATIONS', 'READ_POWER_STATE', 'READ_RUNNING_APPS',
+    'READ_SETTINGS', 'READ_TV_CHANNEL_LIST', 'READ_TV_CURRENT_TIME', 'READ_UPDATE_INFO', 'SEARCH',
+    'TEST_OPEN', 'TEST_PROTECTED', 'TEST_SECURE', 'UPDATE_FROM_REMOTE_APP',
+    'WRITE_NOTIFICATION_ALERT', 'WRITE_NOTIFICATION_TOAST', 'WRITE_SETTINGS',
+  ],
+};
 
 // Runs inside the iframe. Must not reference anything outside its own body.
 function nullOriginRelay(url) {
@@ -92,6 +109,19 @@ function waitOpen(sock, timeoutMs) {
   });
 }
 
+// SSAP equivalents for keys, used if the TV refuses the button socket.
+const MEDIA_FALLBACK = {
+  PLAY: 'ssap://media.controls/play',
+  PAUSE: 'ssap://media.controls/pause',
+  STOP: 'ssap://media.controls/stop',
+  REWIND: 'ssap://media.controls/rewind',
+  FASTFORWARD: 'ssap://media.controls/fastForward',
+  VOLUMEUP: 'ssap://audio/volumeUp',
+  VOLUMEDOWN: 'ssap://audio/volumeDown',
+  CHANNELUP: 'ssap://tv/channelUp',
+  CHANNELDOWN: 'ssap://tv/channelDown',
+};
+
 class LGTV extends EventTarget {
   constructor() {
     super();
@@ -160,7 +190,6 @@ class LGTV extends EventTarget {
       if (this.ws === ws) { this.disconnect(true); this._setState('error', e.message); }
       throw e;
     }
-    try { if (newKey) localStorage.setItem(LGTV.keyName(ip), newKey); } catch { /* storage blocked */ }
 
     if (!this.info.modelName) {
       try {
@@ -235,7 +264,14 @@ class LGTV extends EventTarget {
 
     if (p.register) {
       if (m.type === 'registered') { this.pending.delete(m.id); p.resolve(m); }
-      else if (m.type === 'error') { this.pending.delete(m.id); p.reject(new Error('denied')); }
+      else if (m.type === 'error') {
+        this.pending.delete(m.id);
+        const text = String(m.error || (m.payload && m.payload.errorText) || '');
+        // "403 User denied access" = the user chose "Deny" on the TV; anything else is a TV-side refusal.
+        const err = new Error(/denied access|user denied|user reject|cancel/i.test(text) ? 'denied' : 'pair-error');
+        err.detail = text;
+        p.reject(err);
+      }
       else if (m.payload && m.payload.pairingType === 'PROMPT') {
         this._setState('pairing');
         this._emit('prompt');
@@ -305,7 +341,13 @@ class LGTV extends EventTarget {
     if (this.pointer && this.pointer.isOpen) return Promise.resolve(this.pointer);
     if (this.pointerPromise) return this.pointerPromise;
     this.pointerPromise = (async () => {
-      const r = await this.request('ssap://com.webos.service.networkinput/getPointerInputSocket');
+      let r;
+      try {
+        r = await this.request('ssap://com.webos.service.networkinput/getPointerInputSocket');
+      } catch (e) {
+        if (e.message !== 'not-connected' && e.message !== 'closed') this._emit('pointer-refused', e.message);
+        throw e;
+      }
       let path = r.socketPath;
       if (!path) throw new Error('no-socket-path');
       // Over TLS the TV may still return a plain ws://…:3000 path; the page can only use wss.
@@ -330,7 +372,15 @@ class LGTV extends EventTarget {
     if (!sock.send(text)) throw new Error('pointer-closed');
   }
 
-  button(name) { return this._sendPointer(`type:button\nname:${name}\n\n`); }
+  async button(name) {
+    try {
+      await this._sendPointer(`type:button\nname:${name}\n\n`);
+    } catch (e) {
+      const uri = MEDIA_FALLBACK[name];
+      if (!uri || e.message === 'not-connected') throw e;
+      await this.request(uri);
+    }
+  }
 
   move(dx, dy) {
     if (this.pointer && this.pointer.isOpen) this.pointer.send(`type:move\ndx:${dx}\ndy:${dy}\ndown:0\n\n`);
