@@ -65,7 +65,10 @@ function renderStatus(state) {
   if (state !== 'connected') $('#volBadge').hidden = true;
 }
 
+const LNA_HELP = 'Chrome neleidžia šiai svetainei pasiekti vietinio tinklo įrenginių. Leiskite: bakstelėkite piktogramą kairėje adreso juostos pusėje → Leidimai (Svetainės nustatymai) → „Vietinis tinklas“ → Leisti. Tada bandykite dar kartą.';
+
 function errorText(code) {
+  if (code === 'lna-denied') return LNA_HELP;
   if (code === 'denied') return 'Televizorius atmetė prisijungimą. Spauskite „Prisijungti“ dar kartą ir TV ekrane pasirinkite „Leisti“.';
   if (code === 'pair-timeout') return 'Nesulaukta patvirtinimo televizoriuje. Spauskite „Prisijungti“ dar kartą.';
   return `Nepavyko pasiekti TV adresu ${tvIp}. Patikrinkite:\n` +
@@ -82,7 +85,13 @@ function connect() {
   if (connecting) return connecting;
   clearTimeout(retryTimer);
   wantConnected = true;
-  connecting = tv.connect(tvIp)
+  renderStatus('connecting');
+  connecting = (async () => {
+    // Ask for Chrome's "local network" permission from the page itself, so the dialog is shown.
+    const perm = await requestLocalNetwork(`https://${tvIp}:3001/`);
+    if (perm === 'denied') throw new Error('lna-denied');
+    await tv.connect(tvIp);
+  })()
     .then(() => {
       retryCount = 0;
       onConnected();
@@ -91,6 +100,7 @@ function connect() {
     .catch((err) => {
       if (err.message === 'superseded') return false;
       const code = err.message;
+      if (code === 'lna-denied') { renderStatus('error'); openSetup(); }
       if ($('#setup').open) setupMsg(errorText(code), 'err');
       if (code === 'unreachable') scheduleRetry();
       return false;
@@ -417,12 +427,116 @@ $('#statusBtn').addEventListener('click', () => {
   else { retryCount = 0; connect(); }
 });
 
+function openCertTab(ip) {
+  // Coming back to this page reconnects automatically (see visibilitychange).
+  wantConnected = true;
+  retryCount = 0;
+  window.open(`https://${ip}:3001/`, '_blank', 'noopener');
+}
+
 $('#certBtn').addEventListener('click', () => {
   const ip = readIp();
   if (!ip) return;
   applyIp(ip);
-  setupMsg('Patvirtinę sertifikatą grįžkite čia ir spauskite „Prisijungti“.');
-  window.open(`https://${ip}:3001/`, '_blank', 'noopener');
+  setupMsg('Patvirtinę sertifikatą grįžkite čia: prisijungsiu automatiškai.');
+  openCertTab(ip);
+});
+
+// ---------- Automatic search ----------
+
+let scanning = false;
+
+function scanMsg(text, kind = '') {
+  const el = $('#scanMsg');
+  el.textContent = text;
+  el.className = 'scan-msg' + (kind ? ' ' + kind : '');
+}
+
+function chooseCandidate(ip, certAccepted) {
+  $('#ipInput').value = ip;
+  applyIp(ip);
+  if (certAccepted) {
+    retryCount = 0;
+    connect();
+    return;
+  }
+  setupMsg('Atsidariusiame skirtuke spauskite „Išplėstiniai“ → „Tęsti į …“ ir grįžkite čia: prisijungsiu automatiškai.\n' +
+    'Jei skirtuke matote „Svetainė nepasiekiama“, tai ne televizorius: grįžkite ir pasirinkite kitą adresą.');
+  openCertTab(ip);
+}
+
+function scanButton(ip, label, opts = {}) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn scan-item' + (opts.best ? ' best' : '');
+  const name = document.createElement('b');
+  name.textContent = ip;
+  const note = document.createElement('small');
+  note.textContent = label;
+  b.append(name, note);
+  b.addEventListener('click', () => chooseCandidate(ip, !!opts.certAccepted));
+  return b;
+}
+
+function renderScan(res) {
+  const box = $('#scanResults');
+  box.innerHTML = '';
+  if (res.error === 'denied') return scanMsg(LNA_HELP, 'err');
+  if (res.error === 'no-subnet') return scanMsg('Nepavyko nustatyti jūsų Wi-Fi tinklo. Įveskite TV IP adresą ranka.', 'err');
+
+  const { candidates, others, subnets } = res;
+  if (candidates.length) {
+    const sure = candidates.filter((c) => c.score === 3).length;
+    const tap = candidates[0].certAccepted ? 'Bakstelėkite jį, kad prisijungtumėte.' : 'Bakstelėkite jį: atsidarys sertifikato patvirtinimas.';
+    scanMsg(sure === 1 && candidates.length === 1 ? 'Rastas LG televizorius. ' + tap
+      : sure ? `Rasta LG televizorių: ${sure}. ` + tap
+      : `Tiksliai atpažinti TV nepavyko, bet rasti galimi: ${candidates.length}. Bakstelėkite pirmą: atsidarys sertifikato patvirtinimas.`);
+    candidates.forEach((c, i) => {
+      const label = c.certAccepted ? 'LG TV · sertifikatas jau patvirtintas' : c.score === 3 ? 'LG televizorius' : 'Galimas TV';
+      box.appendChild(scanButton(c.ip, label, { best: i === 0, certAccepted: c.certAccepted }));
+    });
+  } else {
+    scanMsg(`Televizorius tinkle ${subnets.map((p) => p + '.x').join(', ')} nerastas. Patikrinkite, ar TV įjungtas ir prijungtas prie to paties Wi-Fi.` +
+      (others.length ? ' Galite išbandyti kitus rastus įrenginius.' : ''), 'err');
+  }
+  if (others.length) {
+    const more = document.createElement('details');
+    more.className = 'scan-more';
+    if (!candidates.length) more.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = `Kiti tinklo įrenginiai (${others.length})`;
+    const list = document.createElement('div');
+    list.className = 'scan-results';
+    others.forEach((ip) => list.appendChild(scanButton(ip, 'Įrenginys')));
+    more.append(sum, list);
+    box.appendChild(more);
+  }
+}
+
+$('#scanBtn').addEventListener('click', async () => {
+  if (scanning) return;
+  scanning = true;
+  const btn = $('#scanBtn');
+  btn.disabled = true;
+  btn.textContent = 'Ieškoma…';
+  $('#scanBox').hidden = false;
+  $('#scanResults').innerHTML = '';
+  scanMsg('Laukiama leidimo pasiekti vietinio tinklo įrenginius…');
+  try {
+    const res = await scanForTVs((p) => {
+      const pct = Math.round((100 * p.done) / p.total);
+      if (p.phase === 'subnet') scanMsg(`Ieškomas jūsų Wi-Fi tinklas… ${pct}%`);
+      else if (p.phase === 'hosts') scanMsg(`Tikrinami adresai ${p.prefix}.1–254… ${pct}%`);
+      else scanMsg(`Tikrinami rasti įrenginiai… ${p.done}/${p.total}`);
+    });
+    renderScan(res);
+  } catch {
+    scanMsg('Paieška nepavyko. Įveskite TV IP adresą ranka.', 'err');
+  } finally {
+    scanning = false;
+    btn.disabled = false;
+    btn.textContent = 'Ieškoti dar kartą';
+  }
 });
 
 $('#connectBtn').addEventListener('click', () => {

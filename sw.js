@@ -1,10 +1,11 @@
 // Network first, cache as offline fallback. Bump VERSION when files change.
-const VERSION = 'lg-pultas-v1';
+const VERSION = 'lg-pultas-v2';
 const FILES = [
   './',
   'index.html',
   'css/style.css',
   'js/lgtv.js',
+  'js/discover.js',
   'js/app.js',
   'manifest.webmanifest',
   'icons/icon-192.png',

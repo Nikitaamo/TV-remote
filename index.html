@@ -179,6 +179,15 @@
       <h1>Prijungti LG televizorių</h1>
       <p class="muted">Telefonas ir televizorius turi būti tame pačiame Wi-Fi tinkle, o televizorius įjungtas.</p>
 
+      <button id="scanBtn" type="button" class="btn wide primary">Ieškoti TV automatiškai</button>
+      <p class="hint">Chrome paklaus, ar leisti pasiekti vietinio tinklo įrenginius. Pasirinkite „Leisti“.</p>
+      <div id="scanBox" class="scan" hidden>
+        <p id="scanMsg" class="scan-msg" role="status"></p>
+        <div id="scanResults" class="scan-results"></div>
+      </div>
+
+      <div class="divider"><span>arba įveskite ranka</span></div>
+
       <label for="ipInput">Televizoriaus IP adresas</label>
       <input id="ipInput" type="text" inputmode="decimal" autocomplete="off" placeholder="pvz. 192.168.1.50" pattern="^\d{1,3}(\.\d{1,3}){3}$">
       <p class="hint">TV: Nustatymai → Tinklas → Wi-Fi ryšys (arba Laidinis ryšys) → Išplėstiniai nustatymai. Ten rodomas IP adresas.</p>
@@ -190,7 +199,7 @@
         </li>
         <li>
           <strong>Prisijunkite.</strong> Pirmą kartą televizoriuje pasirodys klausimas, ar leisti prisijungti. Patvirtinkite jį TV pulteliu.
-          <button id="connectBtn" type="button" class="btn wide primary">Prisijungti</button>
+          <button id="connectBtn" type="button" class="btn wide secondary">Prisijungti</button>
         </li>
       </ol>
 
@@ -206,6 +215,7 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="js/lgtv.js"></script>
+  <script src="js/discover.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

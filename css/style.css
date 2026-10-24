@@ -345,6 +345,19 @@ dialog::backdrop { background: rgba(0, 0, 0, .65); }
 .setup-msg { min-height: 1.2em; font-size: 14px; margin: 0; line-height: 1.4; white-space: pre-line; }
 .setup-msg.err { color: #ff8a8a; }
 .setup-msg.ok { color: #6ee7a7; }
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.scan { display: flex; flex-direction: column; gap: 8px; }
+.scan-msg { margin: 0; font-size: 14px; line-height: 1.4; white-space: pre-line; }
+.scan-msg.err { color: #ff8a8a; }
+.scan-results { display: flex; flex-direction: column; gap: 8px; }
+.scan-item { justify-content: space-between; padding: 10px 14px; min-height: 52px; text-align: left; }
+.scan-item b { font-size: 16px; }
+.scan-item small { color: var(--muted); font-size: 12px; }
+.scan-item.best { border-color: var(--accent); }
+.scan-more { font-size: 12px; color: var(--muted); }
+.scan-more summary { cursor: pointer; padding: 4px 0; }
+.scan-more .scan-results { margin-top: 6px; }
 .setup-footer { display: flex; justify-content: space-between; margin-top: 4px; }
 .link { background: none; border: 0; color: var(--muted); text-decoration: underline; padding: 8px 0; cursor: pointer; font-size: 14px; }
 
