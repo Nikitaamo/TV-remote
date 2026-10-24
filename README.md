@@ -13,6 +13,7 @@ Svetainė: https://nikitaamo.github.io/TV-remote/
 - Visų įdiegtų programėlių ir įvesčių sąrašas.
 - „Pelė“: jutiklinis laukas Magic Remote žymekliui ir slinkimui.
 - TV išjungimas.
+- Atsimena televizorių (pavadinimą, modelį, poravimo raktą) ir kitą kartą prisijungia pats.
 - Galima įsidėti į telefono pradžios ekraną kaip programėlę (Chrome → ⋮ → „Įdiegti programą“ arba „Pridėti prie pradžios ekrano“).
 
 ## Pirmas paleidimas
@@ -20,7 +21,12 @@ Svetainė: https://nikitaamo.github.io/TV-remote/
 1. Televizorius įjungtas, telefonas ir TV tame pačiame Wi-Fi.
 2. Atidarykite svetainę telefone (Chrome) ir spauskite „Ieškoti TV automatiškai“. Chrome paklaus, ar leisti pasiekti vietinio tinklo įrenginius: pasirinkite „Leisti“.
 3. Bakstelėkite rastą televizorių. Atsidarys skirtukas su įspėjimu „Jūsų ryšys nėra privatus“, nes TV naudoja savo pasirašytą sertifikatą. Spauskite „Išplėstiniai“ → „Tęsti į …“. Po to rodoma klaida ar tuščias puslapis yra normalu, grįžkite į pultą.
-4. Pultas prisijungs pats. TV ekrane pulteliu leiskite prisijungti. Raktas išsaugomas telefone, kitą kartą prisijungiama automatiškai.
+4. Pultas prisijungs pats. TV ekrane pulteliu leiskite prisijungti. Televizorius išsaugomas telefone („Mano televizoriai“), kitą kartą prisijungiama automatiškai.
+
+Jei kitą kartą prisijungti nepavyksta, pultas pats nustato priežastį ir parodo vieną mygtuką:
+- TV įjungtas, bet naršyklė pamiršo sertifikatą → „Patvirtinti“;
+- TV gavo naują IP adresą → pultas jį suranda ir prašo patvirtinti sertifikatą naujam adresui (TV ekrane leisti iš naujo nereikia);
+- TV išjungtas → „Bandyti“, kai jį įjungsite.
 
 Jei paieška TV neranda, IP adresą galima įvesti ranka. Jį rasite TV: Nustatymai → Tinklas → Wi-Fi ryšys (arba Laidinis ryšys) → Išplėstiniai nustatymai.
 
@@ -37,7 +43,9 @@ Rekomenduojama maršrutizatoriuje TV priskirti pastovų IP adresą, kad jo nerei
 
 ## Kaip veikia
 
-Automatinė paieška: naršyklė negali naudoti SSDP/mDNS, todėl `js/discover.js` pirmiausia randa tinklą (maršrutizatorius atsako adresu `.1` arba `.254`), tada patikrina visus 254 adresus. LG televizorių atpažįsta pagal DIAL tarnybą prievade 36866, kurią LG TV naudoja YouTube ir Netflix „cast“ funkcijai. Jei tokio atsako nėra, rodomi kiti tinklo įrenginiai.
+Automatinė paieška: naršyklė negali naudoti SSDP/mDNS, todėl `js/discover.js` pirmiausia randa tinklą (maršrutizatorius atsako adresu `.1` arba `.254`), tada patikrina visus 254 adresus. LG televizorių atpažįsta pagal DIAL tarnybą prievade 36866 ir UPnP aprašą prievade 1754. Pavadinimą (pvz. „[LG] webOS TV …“) bando perskaityti iš UPnP aprašo; jei TV to neleidžia, rodoma „LG televizorius“, o tikslus modelis gaunamas prisijungus. Kiti įrenginiai pažymimi pagal tipą (maršrutizatorius, Samsung TV, Google TV / Chromecast).
+
+Atmintis: kiekvienas TV saugomas pagal jo unikalų `deviceUUID` (gaunamas SSAP `hello` žinute), todėl pasikeitus IP adresui jis atpažįstamas ir naudojamas tas pats poravimo raktas.
 
 Programėlė kalba LG SSAP protokolu per `wss://<TV IP>:3001`. LG televizorius atmeta WebSocket ryšius iš įprastų svetainių, bet priima `Origin: null`, todėl kiekvienas ryšys atidaromas paslėptame `data:` iframe ir perduodamas puslapiui per `postMessage` (`js/lgtv.js`). Mygtukai siunčiami per TV „pointer input“ socket, garsas, kanalai, programėlės ir įvestys per SSAP užklausas.
 

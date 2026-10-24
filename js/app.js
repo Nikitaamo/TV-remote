@@ -9,13 +9,56 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch { /* storage blocked */ } },
 };
 
-let tvIp = store.get('lg-ip');
+// ---------- Saved TVs ----------
+// [{ id, ip, name, model, key, lastUsed }]. id is the TV's own deviceUUID, so the TV is
+// recognised even after its IP changes ('ip:<address>' until the UUID is known).
+
+const saved = {
+  list() {
+    try { const l = JSON.parse(store.get('lg-tvs') || '[]'); return Array.isArray(l) ? l : []; } catch { return []; }
+  },
+  write(list) { store.set('lg-tvs', JSON.stringify(list.slice(0, 10))); },
+  get(id) { return id ? this.list().find((t) => t.id === id) || null : null; },
+  byIp(ip) { return this.list().find((t) => t.ip === ip) || null; },
+  put(rec) { this.write([rec, ...this.list().filter((t) => t.id !== rec.id)]); },
+  remove(id) { this.write(this.list().filter((t) => t.id !== id)); },
+};
+
+function tvName(rec) {
+  if (!rec) return 'LG televizorius';
+  return rec.name || (rec.model ? `[LG] webOS TV ${rec.model}` : 'LG televizorius');
+}
+
+function tvShortName(rec) {
+  if (!rec) return '';
+  return rec.model ? 'LG ' + rec.model : rec.name || 'LG TV';
+}
+
+// Earlier versions kept one TV under 'lg-ip' and 'lg-client-key:<ip>'.
+(function migrate() {
+  const ip = store.get('lg-ip');
+  if (ip && !store.get('lg-tvs')) {
+    saved.put({ id: 'ip:' + ip, ip, name: null, model: null, key: store.get(LGTV.keyName(ip)), lastUsed: Date.now() });
+    store.set('lg-current', 'ip:' + ip);
+  }
+  store.del('lg-ip');
+})();
+
+// The TV we connect to: { ip, id (saved TV id or null), name (from search or null) }.
+let target = null;
 let wantConnected = false;
 let connecting = null;
 let retryTimer = null;
 let retryCount = 0;
+let recoveryTried = false;
+let recovering = false;
 let apps = null;
 const RETRY_DELAYS = [1500, 3000, 6000, 10000, 15000];
+
+function targetRecord() {
+  if (!target) return null;
+  return saved.get(target.id) || saved.byIp(target.ip);
+}
 
 // Well-known apps. `id` is the webOS app id; `re` matches the title when the id differs.
 const SHORTCUTS = [
@@ -53,14 +96,15 @@ function setupMsg(text, kind = '') {
 const STATUS_TEXT = {
   idle: () => 'Neprisijungta',
   connecting: () => 'Jungiamasi…',
+  searching: () => 'Ieškomas televizorius…',
   pairing: () => 'Patvirtinkite TV ekrane',
-  connected: () => 'Prisijungta · ' + tvIp,
+  connected: () => 'Prisijungta · ' + (tvShortName(targetRecord()) || (target && target.ip)),
   disconnected: () => 'Atsijungta',
   error: () => 'Nepavyko prisijungti',
 };
 
 function renderStatus(state) {
-  $('#statusBtn').dataset.state = state;
+  $('#statusBtn').dataset.state = state === 'searching' ? 'connecting' : state;
   $('#statusText').textContent = (STATUS_TEXT[state] || STATUS_TEXT.idle)();
   if (state !== 'connected') $('#volBadge').hidden = true;
 }
@@ -71,29 +115,64 @@ function errorText(code) {
   if (code === 'lna-denied') return LNA_HELP;
   if (code === 'denied') return 'Televizorius atmetė prisijungimą. Spauskite „Prisijungti“ dar kartą ir TV ekrane pasirinkite „Leisti“.';
   if (code === 'pair-timeout') return 'Nesulaukta patvirtinimo televizoriuje. Spauskite „Prisijungti“ dar kartą.';
-  return `Nepavyko pasiekti TV adresu ${tvIp}. Patikrinkite:\n` +
+  return `Nepavyko pasiekti TV adresu ${target ? target.ip : ''}. Patikrinkite:\n` +
     '• TV įjungtas ir prijungtas prie to paties Wi-Fi kaip telefonas;\n' +
-    '• IP adresas teisingas;\n' +
-    '• 1 žingsnis (sertifikatas) atliktas šioje naršyklėje (kartais jį reikia pakartoti);\n' +
+    '• sertifikatas patvirtintas šioje naršyklėje (kartais jį reikia patvirtinti iš naujo);\n' +
     '• jei naršyklė prašė leidimo pasiekti vietinio tinklo įrenginius, jį leiskite.';
 }
 
+// ---------- Banner (what to do when the saved TV does not answer) ----------
+
+let bannerAction = null;
+
+function showBanner(text, buttonText, action) {
+  $('#bannerText').textContent = text;
+  $('#bannerBtn').textContent = buttonText;
+  bannerAction = action;
+  $('#banner').hidden = false;
+}
+
+function hideBanner() {
+  $('#banner').hidden = true;
+  bannerAction = null;
+}
+
+$('#bannerBtn').addEventListener('click', () => { if (bannerAction) bannerAction(); });
+
 // ---------- Connection ----------
 
+function setTarget(ip, opts = {}) {
+  const rec = saved.get(opts.id) || saved.byIp(ip);
+  const next = { ip, id: rec ? rec.id : null, name: opts.name || null };
+  if (target && target.ip === ip && target.id === next.id) {
+    if (next.name) target.name = next.name;
+    return;
+  }
+  if (tv.connected || tv.state === 'connecting' || tv.state === 'pairing') tv.disconnect(true);
+  target = next;
+  renderStatus('idle');
+}
+
 function connect() {
-  if (!tvIp) { openSetup(); return Promise.resolve(false); }
+  if (!target) { openSetup(); return Promise.resolve(false); }
   if (connecting) return connecting;
   clearTimeout(retryTimer);
   wantConnected = true;
   renderStatus('connecting');
+  const { ip } = target;
   connecting = (async () => {
     // Ask for Chrome's "local network" permission from the page itself, so the dialog is shown.
-    const perm = await requestLocalNetwork(`https://${tvIp}:3001/`);
+    const perm = await requestLocalNetwork(`https://${ip}:3001/`);
     if (perm === 'denied') throw new Error('lna-denied');
-    await tv.connect(tvIp);
+    const rec = targetRecord();
+    const res = await tv.connect(ip, rec ? rec.key || null : null);
+    remember(ip, rec, res);
   })()
     .then(() => {
       retryCount = 0;
+      recoveryTried = false;
+      hideBanner();
+      renderStatus('connected');
       onConnected();
       return true;
     })
@@ -102,11 +181,77 @@ function connect() {
       const code = err.message;
       if (code === 'lna-denied') { renderStatus('error'); openSetup(); }
       if ($('#setup').open) setupMsg(errorText(code), 'err');
-      if (code === 'unreachable') scheduleRetry();
+      if (code === 'unreachable') {
+        if (!recoveryTried) { recoveryTried = true; recover(); } else scheduleRetry();
+      }
       return false;
     })
     .finally(() => { connecting = null; });
   return connecting;
+}
+
+// Save what we learned about this TV: its UUID, model, pairing key and current address.
+function remember(ip, rec, res) {
+  const id = res.uuid || (rec && rec.id) || 'ip:' + ip;
+  // The old record is the same TV unless the TV now reports a different UUID.
+  const sameTv = rec && (rec.id === id || rec.id.startsWith('ip:'));
+  const base = (sameTv ? rec : saved.get(id)) || {};
+  const next = {
+    id,
+    ip,
+    name: (target && target.name) || base.name || null,
+    model: res.modelName || base.model || null,
+    key: res.key || base.key || null,
+    lastUsed: Date.now(),
+  };
+  let list = saved.list().filter((t) => t.id !== id && !(sameTv && t.id === rec.id));
+  // No other saved TV can be at this address now.
+  list = list.map((t) => (t.ip === ip ? { ...t, ip: null } : t));
+  saved.write([next, ...list]);
+  store.set('lg-current', id);
+  target = { ip, id, name: null };
+}
+
+// The saved TV did not answer: find out why and offer the one step that fixes it.
+async function recover() {
+  if (recovering || !target) return;
+  recovering = true;
+  const { ip, id } = target;
+  renderStatus('searching');
+  try {
+    if (await lgAnswersAt(ip)) {
+      showBanner('Televizorius įjungtas, bet naršyklė pamiršo jo sertifikatą. Patvirtinkite jį dar kartą.',
+        'Patvirtinti', () => openCertTab(ip));
+      return;
+    }
+    const res = await scanForTVs();
+    const lgs = (res.candidates || []).filter((c) => c.score === 3 && c.ip !== ip);
+    const ready = lgs.find((c) => c.certAccepted);
+    const next = ready || (lgs.length === 1 ? lgs[0] : null);
+    if (next) {
+      // Same TV at a new address: the saved pairing key still works, only the certificate is per address.
+      target = { ip: next.ip, id, name: next.name || null };
+      if (next.certAccepted) { retryCount = 0; connect(); return; }
+      showBanner(`Televizorius rastas nauju adresu ${next.ip}. Patvirtinkite jo sertifikatą, ir pultas prisijungs.`,
+        'Patvirtinti', () => openCertTab(next.ip));
+      return;
+    }
+    if (lgs.length > 1) {
+      showBanner('Tinkle rasti keli LG televizoriai. Pasirinkite savo.', 'Rinktis', () => { openSetup(); $('#scanBtn').click(); });
+      return;
+    }
+    showBanner('Televizorius nepasiekiamas. Įjunkite jį ir bakstelėkite „Bandyti“.', 'Bandyti', () => {
+      retryCount = 0;
+      recoveryTried = false;
+      connect();
+    });
+    scheduleRetry();
+  } catch {
+    scheduleRetry();
+  } finally {
+    recovering = false;
+    if (!tv.connected && !connecting) renderStatus('error');
+  }
 }
 
 function scheduleRetry() {
@@ -117,7 +262,7 @@ function scheduleRetry() {
 
 function onConnected() {
   if ($('#setup').open) {
-    setupMsg('Prisijungta! Pultas paruoštas.', 'ok');
+    setupMsg('Prisijungta prie ' + tvName(targetRecord()) + '. Pultas paruoštas.', 'ok');
     setTimeout(() => { if ($('#setup').open) $('#setup').close(); }, 900);
   }
   loadAppsAndInputs();
@@ -125,12 +270,13 @@ function onConnected() {
 
 tv.addEventListener('state', (e) => {
   const { state } = e.detail;
+  if (state === 'connected' && connecting) return; // shown once the TV is saved
   renderStatus(state);
   if (state === 'pairing') {
     const text = 'Televizoriaus ekrane patvirtinkite prisijungimą (pulteliu pasirinkite „Leisti“).';
     if ($('#setup').open) setupMsg(text); else toast(text, 6000);
   } else if (state === 'connecting' && $('#setup').open) {
-    setupMsg('Jungiamasi prie ' + tvIp + '…');
+    setupMsg('Jungiamasi prie ' + (target ? target.ip : '') + '…');
   } else if (state === 'disconnected') {
     scheduleRetry();
   }
@@ -145,16 +291,17 @@ tv.addEventListener('volume', (e) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(retryTimer); return; }
-  if (wantConnected && !tv.connected && tv.state !== 'connecting' && tv.state !== 'pairing') {
+  if (wantConnected && target && !tv.connected && !connecting && !recovering && tv.state !== 'pairing') {
     retryCount = 0;
+    recoveryTried = false;
     connect();
   }
 });
 
 function needConnection() {
-  if (!tvIp) { openSetup(); return; }
+  if (!target) { openSetup(); return; }
   toast(tv.state === 'pairing' ? 'Patvirtinkite prisijungimą TV ekrane.' : 'TV neprisijungęs. Jungiamasi…');
-  if (tv.state !== 'connecting' && tv.state !== 'pairing') { retryCount = 0; connect(); }
+  if (!connecting && !recovering && tv.state !== 'pairing') { retryCount = 0; connect(); }
 }
 
 // ---------- Commands ----------
@@ -404,40 +551,71 @@ function readIp() {
   return null;
 }
 
-function applyIp(ip) {
-  if (ip === tvIp) return;
-  tv.disconnect(true);
-  renderStatus('idle');
-  tvIp = ip;
-  store.set('lg-ip', ip);
-  apps = null;
-  store.del('lg-apps');
-  renderShortcuts();
+function listButton(title, sub, onClick, opts = {}) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn scan-item' + (opts.best ? ' best' : '');
+  const text = document.createElement('span');
+  text.className = 'scan-text';
+  const name = document.createElement('b');
+  name.textContent = title;
+  const note = document.createElement('small');
+  note.textContent = sub;
+  text.append(name, note);
+  b.append(text);
+  if (opts.tag) {
+    const tag = document.createElement('em');
+    tag.textContent = opts.tag;
+    b.append(tag);
+  }
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function renderSaved() {
+  const list = saved.list().filter((t) => t.ip);
+  $('#savedBox').hidden = !list.length;
+  const box = $('#savedList');
+  box.innerHTML = '';
+  const cur = targetRecord();
+  for (const rec of list) {
+    const isCur = cur && cur.id === rec.id;
+    const tag = isCur && tv.connected ? 'prisijungta' : '';
+    box.appendChild(listButton(tvName(rec), rec.ip, () => {
+      setTarget(rec.ip, { id: rec.id });
+      retryCount = 0;
+      recoveryTried = false;
+      if (!tv.connected) connect();
+      else setupMsg('Prisijungta prie ' + tvName(rec) + '.', 'ok');
+    }, { best: isCur, tag }));
+  }
 }
 
 function openSetup() {
-  $('#ipInput').value = tvIp || '';
-  setupMsg(tv.connected ? 'Prisijungta prie ' + tvIp + '.' : '', tv.connected ? 'ok' : '');
+  $('#ipInput').value = target ? target.ip : '';
+  setupMsg(tv.connected ? 'Prisijungta prie ' + tvName(targetRecord()) + '.' : '', tv.connected ? 'ok' : '');
+  renderSaved();
   if (!$('#setup').open) $('#setup').showModal();
 }
 
 $('#settingsBtn').addEventListener('click', openSetup);
 $('#statusBtn').addEventListener('click', () => {
-  if (tv.connected || !tvIp) openSetup();
-  else { retryCount = 0; connect(); }
+  if (tv.connected || !target) openSetup();
+  else if (!connecting && !recovering) { retryCount = 0; recoveryTried = false; connect(); }
 });
 
 function openCertTab(ip) {
   // Coming back to this page reconnects automatically (see visibilitychange).
   wantConnected = true;
   retryCount = 0;
+  recoveryTried = false;
   window.open(`https://${ip}:3001/`, '_blank', 'noopener');
 }
 
 $('#certBtn').addEventListener('click', () => {
   const ip = readIp();
   if (!ip) return;
-  applyIp(ip);
+  setTarget(ip);
   setupMsg('Patvirtinę sertifikatą grįžkite čia: prisijungsiu automatiškai.');
   openCertTab(ip);
 });
@@ -446,58 +624,57 @@ $('#certBtn').addEventListener('click', () => {
 
 let scanning = false;
 
+const KIND_NAMES = {
+  router: 'Maršrutizatorius',
+  samsung: 'Samsung televizorius',
+  google: 'Google TV / Chromecast',
+  device: 'Kitas įrenginys',
+};
+
 function scanMsg(text, kind = '') {
   const el = $('#scanMsg');
   el.textContent = text;
   el.className = 'scan-msg' + (kind ? ' ' + kind : '');
 }
 
-function chooseCandidate(ip, certAccepted) {
+function chooseCandidate(ip, opts = {}) {
   $('#ipInput').value = ip;
-  applyIp(ip);
-  if (certAccepted) {
-    retryCount = 0;
-    connect();
-    return;
-  }
+  setTarget(ip, { name: opts.name });
+  retryCount = 0;
+  recoveryTried = false;
+  if (opts.certAccepted) { connect(); return; }
   setupMsg('Atsidariusiame skirtuke spauskite „Išplėstiniai“ → „Tęsti į …“ ir grįžkite čia: prisijungsiu automatiškai.\n' +
-    'Jei skirtuke matote „Svetainė nepasiekiama“, tai ne televizorius: grįžkite ir pasirinkite kitą adresą.');
+    'Jei skirtuke matote „Svetainė nepasiekiama“, tai ne televizorius: grįžkite ir pasirinkite kitą.');
   openCertTab(ip);
-}
-
-function scanButton(ip, label, opts = {}) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = 'btn scan-item' + (opts.best ? ' best' : '');
-  const name = document.createElement('b');
-  name.textContent = ip;
-  const note = document.createElement('small');
-  note.textContent = label;
-  b.append(name, note);
-  b.addEventListener('click', () => chooseCandidate(ip, !!opts.certAccepted));
-  return b;
 }
 
 function renderScan(res) {
   const box = $('#scanResults');
   box.innerHTML = '';
   if (res.error === 'denied') return scanMsg(LNA_HELP, 'err');
-  if (res.error === 'no-subnet') return scanMsg('Nepavyko nustatyti jūsų Wi-Fi tinklo. Įveskite TV IP adresą ranka.', 'err');
+  if (res.error === 'no-subnet') {
+    scanMsg('Nepavyko nustatyti jūsų Wi-Fi tinklo. Įveskite TV IP adresą ranka.', 'err');
+    return box.appendChild(diagDetails(res.diag));
+  }
 
   const { candidates, others, subnets } = res;
   if (candidates.length) {
     const sure = candidates.filter((c) => c.score === 3).length;
     const tap = candidates[0].certAccepted ? 'Bakstelėkite jį, kad prisijungtumėte.' : 'Bakstelėkite jį: atsidarys sertifikato patvirtinimas.';
     scanMsg(sure === 1 && candidates.length === 1 ? 'Rastas LG televizorius. ' + tap
-      : sure ? `Rasta LG televizorių: ${sure}. ` + tap
+      : sure ? `Rasta LG televizorių: ${sure}. Pasirinkite savo: ` + tap.charAt(0).toLowerCase() + tap.slice(1)
       : `Tiksliai atpažinti TV nepavyko, bet rasti galimi: ${candidates.length}. Bakstelėkite pirmą: atsidarys sertifikato patvirtinimas.`);
     candidates.forEach((c, i) => {
-      const label = c.certAccepted ? 'LG TV · sertifikatas jau patvirtintas' : c.score === 3 ? 'LG televizorius' : 'Galimas TV';
-      box.appendChild(scanButton(c.ip, label, { best: i === 0, certAccepted: c.certAccepted }));
+      const rec = saved.byIp(c.ip);
+      const title = c.name || (rec ? tvName(rec) : c.score === 3 ? 'LG televizorius' : 'Galimas televizorius');
+      const notes = [c.ip];
+      if (rec) notes.push('išsaugotas');
+      if (c.certAccepted) notes.push('sertifikatas patvirtintas');
+      box.appendChild(listButton(title, notes.join(' · '), () => chooseCandidate(c.ip, { certAccepted: c.certAccepted, name: c.name }), { best: i === 0 }));
     });
   } else {
-    scanMsg(`Televizorius tinkle ${subnets.map((p) => p + '.x').join(', ')} nerastas. Patikrinkite, ar TV įjungtas ir prijungtas prie to paties Wi-Fi.` +
-      (others.length ? ' Galite išbandyti kitus rastus įrenginius.' : ''), 'err');
+    scanMsg(`LG televizorius tinkle ${subnets.map((p) => p + '.x').join(', ')} nerastas. Patikrinkite, ar TV įjungtas ir prijungtas prie to paties Wi-Fi.` +
+      (others.length ? ' Žemiau – kiti rasti įrenginiai.' : ''), 'err');
   }
   if (others.length) {
     const more = document.createElement('details');
@@ -507,10 +684,27 @@ function renderScan(res) {
     sum.textContent = `Kiti tinklo įrenginiai (${others.length})`;
     const list = document.createElement('div');
     list.className = 'scan-results';
-    others.forEach((ip) => list.appendChild(scanButton(ip, 'Įrenginys')));
+    others.forEach((o) => {
+      const rec = saved.byIp(o.ip);
+      list.appendChild(listButton(rec ? tvName(rec) : KIND_NAMES[o.kind] || KIND_NAMES.device, o.ip, () => chooseCandidate(o.ip)));
+    });
     more.append(sum, list);
     box.appendChild(more);
   }
+  if (!candidates.length || candidates[0].score < 3) box.appendChild(diagDetails(res.diag));
+}
+
+// Short technical summary, useful when the TV is not found.
+function diagDetails(d = {}) {
+  const el = document.createElement('details');
+  el.className = 'scan-more';
+  const sum = document.createElement('summary');
+  sum.textContent = 'Techninė informacija';
+  const p = document.createElement('p');
+  p.className = 'hint';
+  p.textContent = `Leidimas: ${d.perm || '?'} · HTTP: ${d.httpAllowed ? 'taip' : 'ne'} · Tinklas: ${(d.subnets || []).join(', ') || '?'} · Įrenginių: ${d.alive ?? '?'} · LG: ${d.lg ?? '?'}`;
+  el.append(sum, p);
+  return el;
 }
 
 $('#scanBtn').addEventListener('click', async () => {
@@ -524,10 +718,10 @@ $('#scanBtn').addEventListener('click', async () => {
   scanMsg('Laukiama leidimo pasiekti vietinio tinklo įrenginius…');
   try {
     const res = await scanForTVs((p) => {
-      const pct = Math.round((100 * p.done) / p.total);
+      const pct = Math.round((100 * p.done) / Math.max(1, p.total));
       if (p.phase === 'subnet') scanMsg(`Ieškomas jūsų Wi-Fi tinklas… ${pct}%`);
       else if (p.phase === 'hosts') scanMsg(`Tikrinami adresai ${p.prefix}.1–254… ${pct}%`);
-      else scanMsg(`Tikrinami rasti įrenginiai… ${p.done}/${p.total}`);
+      else scanMsg('Nustatomi įrenginių pavadinimai…');
     });
     renderScan(res);
   } catch {
@@ -542,9 +736,10 @@ $('#scanBtn').addEventListener('click', async () => {
 $('#connectBtn').addEventListener('click', () => {
   const ip = readIp();
   if (!ip) return;
-  applyIp(ip);
+  setTarget(ip);
   retryCount = 0;
-  if (tv.connected) { setupMsg('Prisijungta prie ' + ip + '.', 'ok'); return; }
+  recoveryTried = false;
+  if (tv.connected) { setupMsg('Prisijungta prie ' + tvName(targetRecord()) + '.', 'ok'); return; }
   connect();
 });
 
@@ -552,14 +747,17 @@ $('#forgetBtn').addEventListener('click', () => {
   wantConnected = false;
   clearTimeout(retryTimer);
   tv.disconnect(true);
-  if (tvIp) store.del(LGTV.keyName(tvIp));
-  store.del('lg-ip');
+  const rec = targetRecord();
+  if (rec) saved.remove(rec.id);
+  store.del('lg-current');
   store.del('lg-apps');
-  tvIp = null;
+  target = null;
   apps = null;
   $('#ipInput').value = '';
+  hideBanner();
   renderStatus('idle');
   renderShortcuts();
+  renderSaved();
   setupMsg('Televizorius pamirštas.');
 });
 
@@ -572,7 +770,16 @@ $('#ipInput').addEventListener('keydown', (e) => {
 try { apps = JSON.parse(store.get('lg-apps') || 'null'); } catch { apps = null; }
 renderShortcuts();
 renderStatus('idle');
-if (tvIp) connect(); else openSetup();
+{
+  // Reconnect to the TV used last time.
+  const last = saved.get(store.get('lg-current')) || saved.list().find((t) => t.ip);
+  if (last && last.ip) {
+    target = { ip: last.ip, id: last.id, name: null };
+    connect();
+  } else {
+    openSetup();
+  }
+}
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});

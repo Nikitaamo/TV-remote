@@ -58,6 +58,11 @@
     </button>
   </header>
 
+  <div id="banner" class="banner" role="status" hidden>
+    <span id="bannerText"></span>
+    <button id="bannerBtn" type="button" class="btn"></button>
+  </div>
+
   <main>
     <!-- Pultas -->
     <section id="tab-remote" class="tab active" aria-label="Pultas">
@@ -178,6 +183,11 @@
     <form method="dialog" class="setup">
       <h1>Prijungti LG televizorių</h1>
       <p class="muted">Telefonas ir televizorius turi būti tame pačiame Wi-Fi tinkle, o televizorius įjungtas.</p>
+
+      <div id="savedBox" class="scan" hidden>
+        <h2>Mano televizoriai</h2>
+        <div id="savedList" class="scan-results"></div>
+      </div>
 
       <button id="scanBtn" type="button" class="btn wide primary">Ieškoti TV automatiškai</button>
       <p class="hint">Chrome paklaus, ar leisti pasiekti vietinio tinklo įrenginius. Pasirinkite „Leisti“.</p>

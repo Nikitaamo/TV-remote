@@ -18,7 +18,8 @@ const Discovery = {
   ],
   tvPort: 3001,
   refPort: 3002,
-  dialPort: 36866,
+  dialPort: 36866, // LG DIAL server (YouTube/Netflix casting)
+  upnpPort: 1754, // LG UPnP device description
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -82,22 +83,23 @@ async function requestLocalNetwork(triggerUrl, waitMs = 60000) {
 
 // ---- Scan ----
 
-async function findSubnets(httpAllowed, onProgress) {
+// Returns { prefixes, routers, httpOk }. A router that serves its web page is a sure sign of
+// the subnet; a quick refusal on https is a weaker one. Plain http works only when Chrome
+// allows local network access, so it is counted only when it really answers.
+async function findSubnets(onProgress) {
   const gateways = [];
   for (const p of Discovery.prefixes) gateways.push({ prefix: p, ip: p + '.1' }, { prefix: p, ip: p + '.254' });
   const results = await pool(gateways, 40, async (g) => {
-    const [h, s] = await Promise.all([
-      httpAllowed ? probe(`http://${g.ip}/`, 1500) : Promise.resolve({ ok: false, timedOut: true, ms: 1500 }),
-      probe(`https://${g.ip}/`, 1500),
-    ]);
-    return { ...g, strong: h.ok || s.ok, fast: !h.timedOut || !s.timedOut, ms: Math.min(h.ms, s.ms) };
+    const [h, s] = await Promise.all([probe(`http://${g.ip}/`, 1500), probe(`https://${g.ip}/`, 1500)]);
+    return { ...g, httpOk: h.ok, strong: h.ok || s.ok, fast: !s.timedOut, ms: s.ms };
   }, onProgress);
 
-  // A router that serves its web page is a sure sign; a quick refusal is a weaker one.
-  const strong = [...new Set(results.filter((r) => r.strong).map((r) => r.prefix))];
-  if (strong.length) return strong.slice(0, 2);
-  const weak = results.filter((r) => r.fast).sort((a, b) => a.ms - b.ms).map((r) => r.prefix);
-  return [...new Set(weak)].slice(0, 2);
+  const strong = results.filter((r) => r.strong);
+  let picked = [...new Set(strong.map((r) => r.prefix))];
+  if (!picked.length) picked = [...new Set(results.filter((r) => r.fast).sort((a, b) => a.ms - b.ms).map((r) => r.prefix))];
+  picked = picked.slice(0, 2);
+  const routers = results.filter((r) => picked.includes(r.prefix) && (r.strong || r.fast)).map((r) => r.ip);
+  return { prefixes: picked, routers, httpOk: results.some((r) => r.httpOk) };
 }
 
 async function classify(ip) {
@@ -123,45 +125,96 @@ async function classify(ip) {
 const ipNum = (ip) => ip.split('.').reduce((n, x) => n * 256 + Number(x), 0);
 const NO_PROBE = { ok: false, timedOut: true, ms: 0 };
 
+// LG's UPnP description holds the name shown in casting lists, e.g. "[LG] webOS TV OLED55C1".
+// Readable only if the TV allows cross-origin reads; otherwise null.
+async function readFriendlyName(ip) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2000);
+  try {
+    const r = await fetch(`http://${ip}:${Discovery.upnpPort}/`, { cache: 'no-store', credentials: 'omit', signal: ctrl.signal });
+    const m = /<friendlyName>([^<]{1,80})<\/friendlyName>/i.exec(await r.text());
+    return m ? m[1].replace(/&amp;/g, '&').trim() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Rough device type from well-known HTTP ports (only with local network access).
+async function deviceKind(ip, routers, httpAllowed) {
+  if (routers.includes(ip)) return 'router';
+  if (!httpAllowed) return 'device';
+  const [samsung, google] = await Promise.all([
+    probe(`http://${ip}:8001/api/v2/`, 1500),
+    probe(`http://${ip}:8008/ssdp/device-desc.xml`, 1500),
+  ]);
+  if (samsung.ok) return 'samsung';
+  if (google.ok) return 'google';
+  return 'device';
+}
+
 // onProgress({ phase: 'subnet' | 'hosts' | 'check', done, total, prefix })
+// Result: { subnets, candidates: [{ ip, score, certAccepted, name }], others: [{ ip, kind }], diag }
+// score 3 = LG TV for sure, 1-2 = guessed by timing.
 async function scanForTVs(onProgress = () => {}) {
   const perm = await requestLocalNetwork(`http://${Discovery.prefixes[0]}.1/`);
-  if (perm === 'denied') return { error: 'denied' };
-  const httpAllowed = perm === 'granted'; // plain http to local IPs is allowed only with the permission
+  if (perm === 'denied') return { error: 'denied', diag: { perm } };
 
-  const subnets = await findSubnets(httpAllowed, (done, total) => onProgress({ phase: 'subnet', done, total }));
-  if (!subnets.length) return { error: 'no-subnet' };
+  const net = await findSubnets((done, total) => onProgress({ phase: 'subnet', done, total }));
+  const httpAllowed = perm === 'granted' || net.httpOk;
+  const diag = { perm, httpAllowed, subnets: net.prefixes, alive: 0, lg: 0 };
+  if (!net.prefixes.length) return { error: 'no-subnet', diag };
 
   let found = [];
   const alive = [];
-  for (const prefix of subnets) {
+  for (const prefix of net.prefixes) {
     const ips = Array.from({ length: 254 }, (_, i) => `${prefix}.${i + 1}`);
     const res = await pool(ips, 48, async (ip) => {
-      const [dial, tls] = await Promise.all([
+      const [dial, upnp, tls] = await Promise.all([
         httpAllowed ? probe(`http://${ip}:${Discovery.dialPort}/apps/YouTube`, 2500) : Promise.resolve(NO_PROBE),
+        httpAllowed ? probe(`http://${ip}:${Discovery.upnpPort}/`, 2500) : Promise.resolve(NO_PROBE),
         probe(`https://${ip}:${Discovery.tvPort}/`, 2500),
       ]);
-      return { ip, dial, tls };
+      return { ip, dial, upnp, tls };
     }, (done, total) => onProgress({ phase: 'hosts', done, total, prefix }));
-    for (const { ip, dial, tls } of res) {
-      if (dial.ok || tls.ok) found.push({ ip, score: 3, certAccepted: tls.ok });
-      else if (!tls.timedOut || !dial.timedOut) alive.push({ ip, ms: tls.ms });
+    for (const { ip, dial, upnp, tls } of res) {
+      if (dial.ok || upnp.ok || tls.ok) found.push({ ip, score: 3, certAccepted: tls.ok, name: null });
+      else if (!tls.timedOut || !dial.timedOut || !upnp.timedOut) alive.push({ ip, ms: tls.ms });
     }
     if (found.length || alive.length) break;
   }
+  diag.alive = alive.length + found.length;
+  diag.lg = found.length;
 
-  if (!found.length && alive.length) {
-    // A TLS port answers slower than a closed one, so check the slowest responders first.
+  if (found.length) {
+    onProgress({ phase: 'check', done: 0, total: found.length });
+    await Promise.all(found.map(async (c) => { c.name = await readFriendlyName(c.ip); }));
+  } else if (alive.length) {
+    // No LG answer: guess by timing. A TLS port answers slower than a closed one, so check the slowest first.
     const toCheck = alive.slice().sort((a, b) => b.ms - a.ms).slice(0, 32).map((a) => a.ip);
     const checked = await pool(toCheck, 4, classify, (done, total) => onProgress({ phase: 'check', done, total }));
-    found = checked.filter((c) => c.score > 0).sort((a, b) => b.score - a.score || (b.delta || 0) - (a.delta || 0));
+    found = checked.filter((c) => c.score > 0)
+      .sort((a, b) => b.score - a.score || (b.delta || 0) - (a.delta || 0))
+      .map((c) => ({ ...c, certAccepted: false, name: null }));
   }
 
   const foundIps = new Set(found.map((c) => c.ip));
-  const others = alive.map((a) => a.ip).filter((ip) => !foundIps.has(ip)).sort((a, b) => ipNum(a) - ipNum(b)).slice(0, 40);
-  return { subnets, candidates: found, others };
+  const otherIps = alive.map((a) => a.ip).filter((ip) => !foundIps.has(ip)).sort((a, b) => ipNum(a) - ipNum(b)).slice(0, 40);
+  const others = await pool(otherIps, 16, async (ip) => ({ ip, kind: await deviceKind(ip, net.routers, httpAllowed) }));
+  return { subnets: net.prefixes, candidates: found, others, diag };
+}
+
+// Quick check whether an LG TV is on at this address (DIAL/UPnP answer).
+async function lgAnswersAt(ip) {
+  const [dial, upnp] = await Promise.all([
+    probe(`http://${ip}:${Discovery.dialPort}/apps/YouTube`, 2500),
+    probe(`http://${ip}:${Discovery.upnpPort}/`, 2500),
+  ]);
+  return dial.ok || upnp.ok;
 }
 
 window.Discovery = Discovery;
 window.scanForTVs = scanForTVs;
 window.requestLocalNetwork = requestLocalNetwork;
+window.lgAnswersAt = lgAnswersAt;

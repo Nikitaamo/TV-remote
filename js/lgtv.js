@@ -103,6 +103,8 @@ class LGTV extends EventTarget {
     this.pending = new Map();
     this.subs = new Map();
     this.seq = 0;
+    this.info = {};
+    this.helloWaiter = null;
   }
 
   static keyName(ip) { return 'lg-client-key:' + ip; }
@@ -116,9 +118,12 @@ class LGTV extends EventTarget {
 
   _id() { return 'r' + (++this.seq) + '_' + Date.now().toString(36); }
 
-  async connect(ip) {
+  // key: client key saved from an earlier pairing with this TV (undefined = look up by IP).
+  // Resolves to { key, uuid, modelName }.
+  async connect(ip, key) {
     this.disconnect(true);
     this.ip = ip;
+    this.info = {};
     this._setState('connecting');
 
     const ws = new NullOriginSocket(`wss://${ip}:3001`);
@@ -134,8 +139,19 @@ class LGTV extends EventTarget {
     ws.onmessage = (raw) => this._onMessage(raw);
     ws.onclose = () => this._onSocketClosed(ws);
 
-    let key = null;
-    try { key = localStorage.getItem(LGTV.keyName(ip)); } catch { /* storage blocked */ }
+    if (key === undefined) {
+      try { key = localStorage.getItem(LGTV.keyName(ip)); } catch { key = null; }
+    }
+
+    // Before pairing: the TV's unique id, and the model (newer webOS answers this only before registration).
+    try {
+      const hello = await this._hello();
+      if (hello && hello.deviceUUID) this.info.uuid = hello.deviceUUID;
+    } catch { /* older TVs */ }
+    try {
+      const sys = await this._raw('request', 'ssap://system/getSystemInfo', {}, 3000);
+      if (sys.modelName) this.info.modelName = sys.modelName;
+    } catch { /* needs registration on older TVs */ }
 
     let newKey;
     try {
@@ -146,10 +162,39 @@ class LGTV extends EventTarget {
     }
     try { if (newKey) localStorage.setItem(LGTV.keyName(ip), newKey); } catch { /* storage blocked */ }
 
+    if (!this.info.modelName) {
+      try {
+        const sys = await this._raw('request', 'ssap://system/getSystemInfo', {}, 3000);
+        if (sys.modelName) this.info.modelName = sys.modelName;
+      } catch { /* not available */ }
+    }
+
     this._setState('connected');
     this.openPointer().catch(() => {});
     this._subscribeVolume();
-    return true;
+    return { key: newKey || key, uuid: this.info.uuid || null, modelName: this.info.modelName || null };
+  }
+
+  _hello() {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.helloWaiter = null; reject(new Error('timeout')); }, 3000);
+      this.helloWaiter = (payload) => { clearTimeout(timer); this.helloWaiter = null; resolve(payload); };
+      this.ws.send(JSON.stringify({ id: 'hello', type: 'hello', payload: {} }));
+    });
+  }
+
+  // Request on the open socket, also before registration.
+  _raw(type, uri, payload, timeoutMs) {
+    if (!this.ws) return Promise.reject(new Error('not-connected'));
+    return new Promise((resolve, reject) => {
+      const id = this._id();
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('timeout')); }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      this.ws.send(JSON.stringify({ type, id, uri, payload: payload || {} }));
+    });
   }
 
   _register(key) {
@@ -173,6 +218,11 @@ class LGTV extends EventTarget {
   _onMessage(raw) {
     let m;
     try { m = JSON.parse(raw); } catch { return; }
+
+    if (m.type === 'hello') {
+      if (this.helloWaiter) this.helloWaiter(m.payload || {});
+      return;
+    }
 
     const sub = this.subs.get(m.id);
     if (sub) {
@@ -229,18 +279,7 @@ class LGTV extends EventTarget {
 
   request(uri, payload = {}, timeoutMs = 6000) {
     if (!this.connected) return Promise.reject(new Error('not-connected'));
-    return new Promise((resolve, reject) => {
-      const id = this._id();
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error('timeout'));
-      }, timeoutMs);
-      this.pending.set(id, {
-        resolve: (v) => { clearTimeout(timer); resolve(v); },
-        reject: (e) => { clearTimeout(timer); reject(e); },
-      });
-      this.ws.send(JSON.stringify({ type: 'request', id, uri, payload }));
-    });
+    return this._raw('request', uri, payload, timeoutMs);
   }
 
   subscribe(uri, payload, onData) {
